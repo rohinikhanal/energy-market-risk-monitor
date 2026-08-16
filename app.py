@@ -23,8 +23,11 @@ from src.data_quality import (
 from src.demo_data import inject_quality_issues, write_demo_data
 from src.portfolio import calculate_daily_pnl, portfolio_summary, value_positions
 from src.reporting import build_markdown_report
-from src.risk_metrics import risk_summary, var_breaches
+from src.risk_metrics import risk_summary, rolling_var_backtest
 from src.stress_testing import run_price_stress_tests
+
+
+VAR_LOOKBACK_DAYS = 90
 
 
 st.set_page_config(
@@ -118,8 +121,8 @@ try:
     valued = value_positions(portfolio, market)
     daily_pnl = calculate_daily_pnl(valued)
     portfolio_metrics = portfolio_summary(valued)
-    risk_metrics = risk_summary(daily_pnl, confidence)
-    breach_data = var_breaches(daily_pnl, risk_metrics["historical_var_eur"])
+    risk_metrics = risk_summary(daily_pnl, confidence, VAR_LOOKBACK_DAYS)
+    breach_data = rolling_var_backtest(daily_pnl, confidence, VAR_LOOKBACK_DAYS)
     stress_results = run_price_stress_tests(valued, shock)
 except (ValueError, KeyError, pd.errors.ParserError) as error:
     st.error(f"The analysis could not run: {error}")
@@ -135,10 +138,19 @@ with overview_tab:
     metric_columns[0].metric("Portfolio P&L", money(portfolio_metrics["portfolio_pnl_eur"]))
     metric_columns[1].metric("Gross exposure", money(portfolio_metrics["gross_exposure_eur"]))
     metric_columns[2].metric(
-        f"Historical VaR ({confidence:.1%})", money(risk_metrics["historical_var_eur"])
+        f"1-day Historical VaR ({confidence:.1%})",
+        money(risk_metrics["historical_var_eur"]),
+        help=f"Next-day loss estimate using the latest {VAR_LOOKBACK_DAYS} daily P&L observations.",
     )
     metric_columns[3].metric(
-        "Expected Shortfall", money(risk_metrics["expected_shortfall_eur"])
+        "1-day Expected Shortfall",
+        money(risk_metrics["expected_shortfall_eur"]),
+        help=f"Average tail loss from the same {VAR_LOOKBACK_DAYS}-day estimation window.",
+    )
+    st.caption(
+        f"VaR and Expected Shortfall are next-day estimates from a {VAR_LOOKBACK_DAYS}-day "
+        "rolling window. Stress loss covers every loaded position across the full delivery "
+        "horizon, so it is not directly comparable with one-day VaR."
     )
 
     left, right = st.columns([1.6, 1])
@@ -161,7 +173,7 @@ with overview_tab:
         if not stress_results.empty:
             worst = stress_results.sort_values("change_vs_base_eur").iloc[0]
             st.warning(
-                f"Most adverse stress: **{worst['scenario']}**  \n"
+                f"Most adverse full-horizon stress: **{worst['scenario']}**  \n"
                 f"Change versus base: **{money(worst['change_vs_base_eur'])}**"
             )
 
@@ -210,7 +222,7 @@ with portfolio_tab:
     ]
     st.dataframe(
         valued[display_columns].sort_values("delivery_time", ascending=False),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "trade_price_eur_mwh": st.column_config.NumberColumn(format="€ %.2f"),
@@ -220,19 +232,50 @@ with portfolio_tab:
     )
 
 with risk_tab:
-    st.subheader("Historical risk distribution")
+    st.subheader("Rolling out-of-sample 1-day VaR backtest")
+    st.caption(
+        f"Each test day's VaR is estimated from only the previous {VAR_LOOKBACK_DAYS} "
+        "daily P&L observations. The realized test-day P&L is then classified as a "
+        "breach or non-breach before the window moves forward."
+    )
     risk_columns = st.columns(4)
-    risk_columns[0].metric("P&L observations", f"{int(risk_metrics['observations'])}")
-    risk_columns[1].metric("P&L volatility", money(risk_metrics["volatility_eur"]))
-    risk_columns[2].metric("VaR breaches", f"{int(risk_metrics['breach_count'])}")
-    risk_columns[3].metric("Breach rate", f"{risk_metrics['breach_rate_pct']:.2f}%")
+    risk_columns[0].metric(
+        "Out-of-sample test days", f"{int(risk_metrics['backtest_observations'])}"
+    )
+    risk_columns[1].metric("VaR breaches", f"{int(risk_metrics['breach_count'])}")
+    risk_columns[2].metric(
+        "Observed breach rate",
+        f"{risk_metrics['breach_rate_pct']:.2f}%"
+        if pd.notna(risk_metrics["breach_rate_pct"])
+        else "N/A",
+    )
+    risk_columns[3].metric(
+        "Expected breach rate", f"{risk_metrics['expected_breach_rate_pct']:.2f}%"
+    )
+    if pd.notna(risk_metrics["breach_rate_pct"]):
+        if risk_metrics["breach_rate_pct"] > risk_metrics["expected_breach_rate_pct"]:
+            st.warning(
+                "The observed breach rate is above the confidence-level expectation. "
+                "This is a model-monitoring signal, not by itself a formal rejection; "
+                "coverage and independence tests are listed as the next extension."
+            )
+        else:
+            st.success(
+                "The observed breach rate is at or below the confidence-level expectation."
+            )
 
     left, right = st.columns(2)
     with left:
-        st.markdown("#### P&L and VaR limit")
-        st.line_chart(breach_data[["pnl_eur", "var_limit_eur"]], height=320)
+        st.markdown("#### Realized P&L versus forecast VaR limit")
+        if breach_data.empty:
+            st.info(
+                f"At least {VAR_LOOKBACK_DAYS + 1} daily P&L observations are required "
+                "for an out-of-sample backtest."
+            )
+        else:
+            st.line_chart(breach_data[["pnl_eur", "var_limit_eur"]], height=320)
     with right:
-        st.markdown("#### Daily P&L distribution")
+        st.markdown("#### Full daily P&L distribution")
         if not daily_pnl.empty:
             counts, edges = np.histogram(daily_pnl, bins=25)
             histogram = pd.DataFrame(
@@ -241,11 +284,15 @@ with risk_tab:
             )
             st.bar_chart(histogram, color="#7B61FF", height=320)
 
-    st.markdown("#### Deterministic stress tests")
+    st.markdown("#### Deterministic stress tests — full portfolio delivery horizon")
+    st.caption(
+        "Each scenario simultaneously revalues all loaded delivery positions. These losses "
+        "represent the full portfolio delivery horizon, not a one-day risk forecast."
+    )
     stress_display = stress_results.copy()
     st.dataframe(
         stress_display,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "portfolio_pnl_eur": st.column_config.NumberColumn(format="€ %.2f"),
@@ -272,7 +319,7 @@ with quality_tab:
     filtered_quality["status"] = filtered_quality["status"].map(
         lambda value: f"{status_icon(value)} {value}"
     )
-    st.dataframe(filtered_quality, use_container_width=True, hide_index=True)
+    st.dataframe(filtered_quality, width="stretch", hide_index=True)
 
     st.info(
         "Turn on **Inject controlled data errors** in the sidebar to demonstrate "
@@ -291,9 +338,15 @@ with methodology_tab:
 
         **Risk metrics**
 
-        - Historical VaR at {confidence:.1%} is the corresponding quantile of observed daily losses.
-        - Expected Shortfall is the average loss at or beyond VaR.
-        - A breach occurs when daily P&L is lower than negative VaR.
+        - Historical VaR at {confidence:.1%} is a **one-day forecast** estimated from the immediately preceding {VAR_LOOKBACK_DAYS} daily P&L observations.
+        - Expected Shortfall uses the same trailing window and is the average loss at or beyond VaR.
+        - The backtest is rolling and out of sample: estimate from days t-{VAR_LOOKBACK_DAYS} to t-1, observe day t, record breach/no breach, then advance one day.
+        - A breach occurs when realized daily P&L is lower than that day's negative VaR forecast.
+
+        **Stress-test horizon**
+
+        - Deterministic scenarios revalue every loaded position across the **full portfolio delivery horizon**.
+        - Full-horizon stress loss and one-day VaR answer different questions and must not be compared as equivalent exposure measures.
 
         **Data-quality score**
 
@@ -304,6 +357,7 @@ with methodology_tab:
 
         - The bundled prices and positions are synthetic, not live market data.
         - Historical simulation assumes the observed P&L distribution is informative about risk.
+        - A {VAR_LOOKBACK_DAYS}-day window gives limited tail observations at high confidence levels.
         - Stress scenarios are deterministic and do not assign probabilities.
         - The project does not include liquidity risk, transaction costs, collateral or settlement.
         - Results must not be used for trading, investment or regulatory reporting.

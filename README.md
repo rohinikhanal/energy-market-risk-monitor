@@ -17,8 +17,9 @@ included.
 - Quarter-hourly electricity-price ingestion and UTC timestamp handling.
 - A synthetic portfolio of BUY and SELL electricity positions.
 - Position-level mark-to-market valuation and daily P&L aggregation.
-- Historical Value at Risk and Expected Shortfall.
-- VaR-breach monitoring and deterministic price-stress scenarios.
+- One-day Historical Value at Risk and Expected Shortfall using a trailing 90-day window.
+- Rolling out-of-sample VaR backtesting with forecast-versus-realized breach monitoring.
+- Full-portfolio-delivery-horizon deterministic price-stress scenarios.
 - Data-quality checks for missing intervals, duplicates, nulls, invalid positions,
   extreme prices, large price changes, and unmatched delivery periods.
 - A transparent data-quality score and management exception view.
@@ -30,7 +31,7 @@ included.
 
 1. **Executive overview** — key exposure, P&L, risk, data quality, and management alerts.
 2. **Portfolio & P&L** — market prices, direction-level P&L, and position details.
-3. **Risk & stress** — VaR, Expected Shortfall, breaches, P&L distribution, and shocks.
+3. **Risk & stress** — rolling VaR backtesting, Expected Shortfall, breaches, P&L distribution, and full-horizon shocks.
 4. **Data quality** — control status, failure counts, warnings, and reconciliation.
 5. **Methodology** — formulas, assumptions, scoring rules, and limitations.
 
@@ -113,12 +114,29 @@ position P&L = signed volume × (market price − trade price)
 ### Historical Value at Risk
 
 Daily position P&L is aggregated by UTC delivery date. Loss is defined as negative
-P&L. Historical VaR is the selected quantile of the observed loss distribution and is
-reported as a positive amount.
+P&L. The displayed Historical VaR is a one-day risk forecast calculated as the
+selected quantile of losses from the latest 90 daily P&L observations and is reported
+as a positive amount.
+
+### Rolling out-of-sample VaR backtest
+
+The backtest avoids look-ahead bias. For each test day, the application uses only the
+previous 90 daily P&L observations to estimate VaR for the next day. It then observes
+the next day's realized P&L, records breach or no breach, and moves the window forward
+by one day. The bundled 182-day dataset therefore produces 92 out-of-sample test days.
+A breach occurs when realized daily P&L falls below that day's negative VaR forecast.
 
 ### Expected Shortfall
 
-Expected Shortfall is the mean observed loss at or beyond historical VaR.
+Expected Shortfall is a one-day tail-loss estimate from the same trailing 90-day
+window and equals the mean loss at or beyond Historical VaR.
+
+### Stress-test horizon
+
+Deterministic stress scenarios revalue every loaded position across the full portfolio
+delivery horizon. This is deliberately different from the one-day VaR horizon. A
+full-horizon stress loss and a one-day VaR answer different questions and must not be
+treated as directly comparable exposure measures.
 
 ### Quality score
 
@@ -174,7 +192,7 @@ The MVP has deliberate extension points:
 
 1. Replace bundled CSV prices with SMARD or ENTSO-E ingestion.
 2. Add PostgreSQL and versioned SQL transformations.
-3. Add historical VaR backtesting tests and asymmetric-tail models.
+3. Add Kupiec and Christoffersen backtesting tests plus asymmetric-tail models.
 4. Reconcile positions from two simulated ETRM source systems.
 5. Introduce exception ownership, review, sign-off, and audit history.
 6. Add V2G fleet constraints and stochastic charging optimization.
@@ -185,8 +203,9 @@ The MVP has deliberate extension points:
 
 > I built an end-to-end energy risk monitoring application that validates
 > quarter-hourly market data, reconciles positions to prices, calculates portfolio
-> P&L, VaR and Expected Shortfall, performs transparent stress testing, and turns
-> failed controls into a management-ready exception view.
+> P&L, produces one-day VaR and Expected Shortfall estimates, validates VaR with a
+> rolling 90-day out-of-sample backtest, and performs clearly separated full-horizon
+> stress testing. It turns failed controls into a management-ready exception view.
 
 ## License
 

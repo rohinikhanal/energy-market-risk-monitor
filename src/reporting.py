@@ -39,10 +39,15 @@ def build_markdown_report(
         else "- No failed controls."
     )
     worst_stress_line = (
-        f"{worst_stress['scenario']} ({_money(worst_stress['change_vs_base_eur'])} versus base)"
+        f"{worst_stress['scenario']} ({_money(worst_stress['change_vs_base_eur'])} versus base, "
+        "full portfolio delivery horizon)"
         if worst_stress is not None
         else "Not available"
     )
+    lookback = int(risk_metrics.get("var_lookback_days", 90))
+    backtest_observations = int(risk_metrics.get("backtest_observations", 0))
+    breach_rate = risk_metrics.get("breach_rate_pct", float("nan"))
+    breach_rate_text = f"{breach_rate:.2f}%" if pd.notna(breach_rate) else "Not available"
 
     return f"""# Energy Market Risk Report
 
@@ -53,10 +58,12 @@ Generated: {generated_at}
 - Portfolio P&L: {_money(portfolio_metrics['portfolio_pnl_eur'])}
 - Gross exposure: {_money(portfolio_metrics['gross_exposure_eur'])}
 - Price coverage: {portfolio_metrics['price_coverage_pct']:.1f}%
-- Historical VaR ({confidence:.0%}): {_money(risk_metrics['historical_var_eur'])}
-- Expected Shortfall ({confidence:.0%}): {_money(risk_metrics['expected_shortfall_eur'])}
+- Historical VaR ({confidence:.0%}, 1-day): {_money(risk_metrics['historical_var_eur'])}
+- Expected Shortfall ({confidence:.0%}, 1-day): {_money(risk_metrics['expected_shortfall_eur'])}
+- VaR estimation window: previous {lookback} daily P&L observations
+- Rolling out-of-sample backtest: {int(risk_metrics['breach_count'])} breaches across {backtest_observations} test days ({breach_rate_text})
 - Data-quality status: {quality_status} ({quality_score_value:.1f}/100)
-- Most adverse stress: {worst_stress_line}
+- Most adverse stress (full delivery horizon): {worst_stress_line}
 
 ## Failed controls
 
@@ -64,8 +71,12 @@ Generated: {generated_at}
 
 ## Methodology and limitations
 
-VaR and Expected Shortfall use the observed daily P&L distribution. Stress tests
-apply deterministic price shocks to matched positions. The demonstration portfolio
-and bundled market data are synthetic and must not be used for trading or investment
-decisions. Results depend on data coverage and model assumptions.
+VaR and Expected Shortfall are one-day estimates calculated from the latest {lookback}
+daily P&L observations. The breach statistics use a rolling out-of-sample backtest:
+each day's forecast is estimated only from the preceding window before that day's P&L
+is observed. Stress tests apply deterministic price shocks to every matched position
+across the full portfolio delivery horizon. The one-day VaR and full-horizon stress
+loss are therefore not directly comparable. The demonstration portfolio and bundled
+market data are synthetic and must not be used for trading or investment decisions.
+Results depend on data coverage and model assumptions.
 """
