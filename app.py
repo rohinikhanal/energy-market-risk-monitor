@@ -115,6 +115,8 @@ try:
     quality_results = run_data_quality_checks(raw_market, raw_portfolio)
     score = quality_score(quality_results)
     overall_status = overall_quality_status(quality_results)
+    failure_count = int(quality_results["status"].eq("FAIL").sum())
+    warning_count = int(quality_results["status"].eq("WARN").sum())
 
     market = prepare_market_data(raw_market)
     portfolio = prepare_portfolio_data(raw_portfolio)
@@ -165,11 +167,21 @@ with overview_tab:
             help="PASS=1, WARN=0.5 and FAIL=0, averaged across all controls.",
         )
         failed = quality_results[quality_results["status"].eq("FAIL")]
-        if failed.empty:
-            st.success("No failed data controls.")
-        else:
+        warnings = quality_results[quality_results["status"].eq("WARN")]
+        control_summary = (
+            f"{failure_count} critical failure{'s' if failure_count != 1 else ''} "
+            f"· {warning_count} warning{'s' if warning_count != 1 else ''}"
+        )
+        if failure_count:
+            st.error(control_summary)
             for row in failed.head(5).itertuples():
                 st.error(f"{row.check}: {row.details}")
+        elif warning_count:
+            st.warning(control_summary)
+            for row in warnings.head(3).itertuples():
+                st.caption(f"Review: **{row.check}** — {row.details}")
+        else:
+            st.success(control_summary)
         if not stress_results.empty:
             worst = stress_results.sort_values("change_vs_base_eur").iloc[0]
             st.warning(
@@ -305,12 +317,8 @@ with quality_tab:
     quality_columns = st.columns(4)
     quality_columns[0].metric("Overall status", f"{status_icon(overall_status)} {overall_status}")
     quality_columns[1].metric("Quality score", f"{score:.1f}/100")
-    quality_columns[2].metric(
-        "Failed controls", int(quality_results["status"].eq("FAIL").sum())
-    )
-    quality_columns[3].metric(
-        "Warnings", int(quality_results["status"].eq("WARN").sum())
-    )
+    quality_columns[2].metric("Critical failures", failure_count)
+    quality_columns[3].metric("Warnings", warning_count)
 
     status_filter = st.multiselect(
         "Filter status", ["PASS", "WARN", "FAIL"], default=["PASS", "WARN", "FAIL"]

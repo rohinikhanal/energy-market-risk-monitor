@@ -24,6 +24,9 @@ def build_markdown_report(
 
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     failed_checks = quality_results[quality_results["status"].eq("FAIL")]
+    warning_checks = quality_results[quality_results["status"].eq("WARN")]
+    failure_count = len(failed_checks)
+    warning_count = len(warning_checks)
     worst_stress = (
         stress_results.sort_values("change_vs_base_eur").iloc[0]
         if not stress_results.empty
@@ -36,7 +39,15 @@ def build_markdown_report(
             for row in failed_checks.itertuples()
         )
         if not failed_checks.empty
-        else "- No failed controls."
+        else "- No critical failures."
+    )
+    warning_lines = (
+        "\n".join(
+            f"- {row.category} / {row.check}: {row.details}"
+            for row in warning_checks.itertuples()
+        )
+        if not warning_checks.empty
+        else "- No warnings."
     )
     worst_stress_line = (
         f"{worst_stress['scenario']} ({_money(worst_stress['change_vs_base_eur'])} versus base, "
@@ -63,11 +74,16 @@ Generated: {generated_at}
 - VaR estimation window: previous {lookback} daily P&L observations
 - Rolling out-of-sample backtest: {int(risk_metrics['breach_count'])} breaches across {backtest_observations} test days ({breach_rate_text})
 - Data-quality status: {quality_status} ({quality_score_value:.1f}/100)
+- Data-quality controls: {failure_count} critical failure{'s' if failure_count != 1 else ''} · {warning_count} warning{'s' if warning_count != 1 else ''}
 - Most adverse stress (full delivery horizon): {worst_stress_line}
 
-## Failed controls
+## Critical failures
 
 {exception_lines}
+
+## Warnings requiring review
+
+{warning_lines}
 
 ## Methodology and limitations
 
